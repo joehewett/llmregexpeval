@@ -10,11 +10,11 @@ import (
 )
 
 var (
-	verbose  = flag.Bool("verbose", false, "verbose output")
-	help     = flag.Bool("help", false, "help")
-	dataDir  = flag.String("dir", "", "directory to read files from")
-	dataFile = flag.String("file", "", "file to read from")
-	jsonFile = flag.String("json", "", "json file to read from")
+	verbose    = flag.Bool("verbose", false, "verbose output")
+	help       = flag.Bool("help", false, "help")
+	promptFile = flag.String("prompt", "", "The file to read the prompt from. Prompt must be in OpenAI Chat format and contain {{ .task }} in the text.")
+	rulesFile  = flag.String("rules", "", "A JSON file containing the regex rules to run over LLM outputs")
+	taskFile   = flag.String("tasks", "", "A JSON file containing tasks to substitute into the master prompt")
 )
 
 func main() {
@@ -25,19 +25,13 @@ func main() {
 		return
 	}
 
-	jsonStr, err := loadJSON()
+	prompt, err := loadPrompt()
 	if err != nil {
 		fmt.Printf("Failed to load JSON: %s\n", err)
 		return
 	}
 
-	err = json.Unmarshal([]byte(jsonStr), new((map[string]interface{})))
-	if err != nil {
-		fmt.Printf("Failed to unmarshal JSON skeleton, please check your JSON is valid and try again: %s\n", err)
-		return
-	}
-
-	dataFiles, err := loadData()
+	tasks, err := loadTasks()
 	if err != nil {
 		fmt.Printf("Failed to load data: %s\n", err)
 		return
@@ -51,11 +45,11 @@ func main() {
 	}()
 
 	ch := make(chan string)
-	for _, file := range dataFiles {
-		go fill(file, jsonStr, ch)
+	for _, task := range tasks {
+		go fill(prompt, task, ch)
 	}
 
-	for range dataFiles {
+	for range tasks {
 		fmt.Printf(<-ch)
 	}
 
@@ -105,60 +99,69 @@ func fill(file string, jsonStr string, ch chan string) error {
 	return nil
 }
 
-func loadJSON() (string, error) {
-	var jsonStr string
-
-	// Get the json structure if the user provided a file
-	if _, err := os.Stat(*jsonFile); err == nil {
-		if *verbose {
-			fmt.Printf("Reading JSON from file %s\n", *jsonFile)
-		}
-		jsonFile, err := os.Open(*jsonFile)
-		if err != nil {
-			return "", err
-		}
-		defer jsonFile.Close()
-
-		bytes, err := io.ReadAll(jsonFile)
-
-		if err != nil {
-			return "", err
-		}
-
-		jsonStr = string(bytes)
-		if *verbose {
-			fmt.Printf("JSON: %s\n", jsonStr)
-		}
+func loadPrompt() (string, error) {
+	if _, err := os.Stat(*promptFile); err != nil {
+		return "", fmt.Errorf("failed to read prompt file")
 	}
 
-	if jsonStr == "" {
-		return "", fmt.Errorf("please provide an empty JSON structure that you would like to be populated from the data you provide")
+	if *verbose {
+		fmt.Printf("Reading prompt JSON from file %s\n", *promptFile)
 	}
 
-	return jsonStr, nil
+	handle, err := os.Open(*promptFile)
+	if err != nil {
+		return "", err
+	}
+
+	defer handle.Close()
+
+	bytes, err := io.ReadAll(handle)
+	if err != nil {
+		return "", err
+	}
+
+	err = json.Unmarshal(bytes, new((map[string]interface{})))
+	if err != nil {
+		return "", fmt.Errorf("Failed to unmarshal JSON skeleton, please check your JSON is valid and try again: %s\n", err)
+	}
+
+	promptJSON := string(bytes)
+	if *verbose {
+		fmt.Printf("JSON: %s\n", promptJSON)
+	}
+
+	if promptJSON == "" {
+		return "", fmt.Errorf("please provide the JSON containing your prompt in OpenAI format")
+	}
+
+	return promptJSON, nil
 }
 
-func loadData() ([]string, error) {
-	var dataFiles []string
+func loadTasks() ([]string, error) {
+	var taskStrings []string
 
-	// If the user provided a directory, read all files from that directory
-	if *dataDir != "" {
-		if *verbose {
-			fmt.Printf("Reading data from directory %s\n", *dataDir)
-		}
-		files, err := os.ReadDir(*dataDir)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, file := range files {
-			dataFiles = append(dataFiles, file.Name())
-		}
-	} else if *dataFile != "" {
-		dataFiles = append(dataFiles, *dataFile)
-	} else {
-		return nil, fmt.Errorf("please provide a directory or file to read data from")
+	if *taskFile == "" {
+		return nil, fmt.Errorf("you need to specify a task file containing an array of strings, each representing an LLM task")
 	}
 
-	return dataFiles, nil
+	if *verbose {
+		fmt.Printf("Reading data from directory %s\n", *taskFile)
+	}
+
+	handle, err := os.Open(*taskFile)
+	if err != nil {
+		return nil, fmt.Errorf("could not open task file")
+	}
+
+	bytes, err := io.ReadAll(handle)
+	if err != nil {
+		return nil, fmt.Errorf("could not read task file")
+	}
+
+	err = json.Unmarshal(bytes, &taskStrings)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to unmarshal JSON skeleton, please check your JSON is valid and try again: %s\n", err)
+	}
+
+	return taskStrings, nil
 }
